@@ -1,9 +1,6 @@
 package com.example.artemismqtt;
 
-import org.apache.activemq.artemis.api.core.BroadcastGroupConfiguration;
-import org.apache.activemq.artemis.api.core.DiscoveryGroupConfiguration;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
-import org.apache.activemq.artemis.api.core.UDPBroadcastEndpointFactory;
 import org.apache.activemq.artemis.core.config.ClusterConnectionConfiguration;
 import org.apache.activemq.artemis.core.config.impl.ConfigurationImpl;
 import org.apache.activemq.artemis.core.remoting.impl.netty.NettyConnectorFactory;
@@ -23,6 +20,9 @@ public class MqttBroker {
     @Value("${app.number}")
     private String number;
 
+    @Value("${app.size}")
+    private String size;
+
     @Bean
     public EmbeddedActiveMQ embeddedActiveMQ() throws Exception {
 
@@ -30,6 +30,10 @@ public class MqttBroker {
             number = "0";
         }
         int num = Integer.parseInt(number);
+        if (size == null) {
+            size = "1";
+        }
+        int clusterSize = Integer.parseInt(size);
 
 
         EmbeddedActiveMQ embeddedActiveMQ = new EmbeddedActiveMQ();
@@ -51,8 +55,10 @@ public class MqttBroker {
         properties.put(ActiveMQBasicSecurityManager.BOOTSTRAP_PASSWORD, "admin");
         properties.put(ActiveMQBasicSecurityManager.BOOTSTRAP_ROLE, "amq");
         securityManager.init(properties);
-        config.addAcceptorConfiguration("mqtt", "tcp://0.0.0.0:"+(1083+num)+"?protocols=MQTT");
         embeddedActiveMQ.setSecurityManager(securityManager);
+
+        config.addAcceptorConfiguration("mqtt", "tcp://0.0.0.0:" + (1083 + num) + "?protocols=MQTT");
+
 
         //authorization
         Role adminRole = new Role("amq", true, true, true, true, true, true, true, true, true, true, true, true);
@@ -63,37 +69,25 @@ public class MqttBroker {
         config.setSecurityRoles(securityRoles);
 
         //clustering
-        Map<String, TransportConfiguration> connectors = new HashMap<>();
-        TransportConfiguration connectorConfig = new TransportConfiguration(NettyConnectorFactory.class.getName());
-        connectors.put("connectorName"+num, connectorConfig);
-        config.setConnectorConfigurations(connectors);
+        List<String> connectorNames = new ArrayList<>();
+        config.addAcceptorConfiguration("tcp", "tcp://0.0.0.0:" + (61616 + num) + "?protocols=CORE");
+        for (int i = 0; i < clusterSize; i++) {
+            Map<String, Object> params = new HashMap<>();
+            params.put("host", "localhost");
+            params.put("port", 61616 + i);
+            TransportConfiguration transportConfig = new TransportConfiguration(NettyConnectorFactory.class.getName(), params);
+            config.getConnectorConfigurations().put("node" + i, transportConfig);
+            connectorNames.add("node" + i);
+        }
 
-        BroadcastGroupConfiguration broadcastGroupConfig = new BroadcastGroupConfiguration()
-                .setName("bg-group")
-                .setBroadcastPeriod(5000)
-                .setConnectorInfos(List.of("connectorName"+num))
-                .setEndpointFactory(new UDPBroadcastEndpointFactory()
-                        .setGroupAddress("231.7.7.7")
-                        .setGroupPort(9876));
-        config.setBroadcastGroupConfigurations(Collections.singletonList(broadcastGroupConfig));
-
-        DiscoveryGroupConfiguration discoveryGroupConfig = new DiscoveryGroupConfiguration()
-                .setName("dg-group")
-                .setRefreshTimeout(10000)
-                .setBroadcastEndpointFactory(new UDPBroadcastEndpointFactory()
-                        .setGroupAddress("231.7.7.7")
-                        .setGroupPort(9876));
-        config.setDiscoveryGroupConfigurations(Collections.singletonMap("dg-group1", discoveryGroupConfig));
-
-        ClusterConnectionConfiguration clusterConnectionConfig = new ClusterConnectionConfiguration()
-                .setName("cluster-connection")
-                .setConnectorName("connectorName"+num)
-                .setDiscoveryGroupName("dg-group")
-                .setAddress("#")
+        ClusterConnectionConfiguration clusterConnConfig = new ClusterConnectionConfiguration()
+                .setName("cluster-connection-node" + num)
+                .setConnectorName("node" + num)
+                .setStaticConnectors(connectorNames)
                 .setRetryInterval(1000)
-                .setDuplicateDetection(false)
-                .setMessageLoadBalancingType(MessageLoadBalancingType.ON_DEMAND);
-        config.setClusterConfigurations(Collections.singletonList(clusterConnectionConfig));
+                .setMessageLoadBalancingType(MessageLoadBalancingType.ON_DEMAND)
+                .setDuplicateDetection(false);
+        config.getClusterConfigurations().add(clusterConnConfig);
 
         embeddedActiveMQ.setConfiguration(config);
         embeddedActiveMQ.start();
